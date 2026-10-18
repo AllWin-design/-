@@ -17,21 +17,32 @@ API = "https://graph.threads.net/v1.0"
 QUEUE = "queue.txt"
 DONE = "posted.json"
 MAX_LEN = 500
+DEFAULT_TOPIC = "幣圈"   # 每篇預設的主題；單篇要換，就在那篇最後一行寫「主題：XXX」
 BANNED = ["穩賺", "必賺", "保證獲利", "跟單", "跟著做", "穩贏", "加碼", "梭哈"]
 
 
 def load_posts():
     with open(QUEUE, encoding="utf-8") as f:
         raw = f.read()
-    posts = [p.strip() for p in raw.split("\n===\n") if p.strip()]
-    keys = [p.splitlines()[0].strip() for p in posts]
+    out = []
+    for block in (b.strip() for b in raw.split("\n===\n")):
+        if not block:
+            continue
+        lines = block.splitlines()
+        topic = DEFAULT_TOPIC
+        if lines[-1].strip().startswith("主題："):
+            topic = lines.pop().strip()[3:].strip()
+        out.append((lines[0].strip(), "\n".join(lines).strip(), topic))
+    keys = [k for k, _, _ in out]
     if len(set(keys)) != len(keys):
         sys.exit("錯誤：有兩篇貼文的第一行相同，第一行要能當作識別名稱")
-    return list(zip(keys, posts))
+    return out
 
 
-def problems(text):
+def problems(text, topic):
     out = []
+    if not 1 <= len(topic) <= 50 or "." in topic or "&" in topic:
+        out.append(f"主題「{topic}」要 1～50 字，且不能有 . 或 &")
     if len(text) > MAX_LEN:
         out.append(f"字數 {len(text)} 超過 {MAX_LEN}")
     for w in BANNED:
@@ -64,33 +75,33 @@ def main():
 
     if "--check" in sys.argv:
         bad = 0
-        for key, text in posts:
-            p = problems(text)
-            print(f"{'✗' if p else '✓'} {len(text):>3} 字  {key}" + (f"  → {'；'.join(p)}" if p else ""))
+        for key, text, topic in posts:
+            p = problems(text, topic)
+            print(f"{'✗' if p else '✓'} {len(text):>3} 字  [{topic}]  {key}" + (f"  → {'；'.join(p)}" if p else ""))
             bad += bool(p)
         print(f"\n共 {len(posts)} 篇，{bad} 篇有問題")
         sys.exit(1 if bad else 0)
 
     done = json.load(open(DONE, encoding="utf-8")) if os.path.exists(DONE) else []
     posted = {d["key"] for d in done}
-    pending = [(k, t) for k, t in posts if k not in posted]
+    pending = [x for x in posts if x[0] not in posted]
 
     if not pending:
         print("全部貼文都發完了，停止排程。")
         output("finished", "true")
         return
 
-    key, text = pending[0]
-    p = problems(text)
+    key, text, topic = pending[0]
+    p = problems(text, topic)
     if p:
         sys.exit(f"不發文，這篇有問題：{key} → {'；'.join(p)}")
 
-    print(f"下一篇（剩 {len(pending)} 篇）：\n\n{text}\n")
+    print(f"下一篇（剩 {len(pending)} 篇），主題「{topic}」：\n\n{text}\n")
     if os.environ.get("DRY_RUN") == "1":
         print("DRY_RUN：只檢查，不發文。")
         return
 
-    container = call("me/threads", {"media_type": "TEXT", "text": text})["id"]
+    container = call("me/threads", {"media_type": "TEXT", "text": text, "topic_tag": topic})["id"]
     time.sleep(30)  # Meta 建議建立後稍等再發布
     post_id = call("me/threads_publish", {"creation_id": container})["id"]
 
