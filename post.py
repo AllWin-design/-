@@ -1,0 +1,105 @@
+"""Threads 幣圈貼文自動發佈：每次執行發 queue.txt 裡下一篇還沒發過的文。
+
+用法：
+  python post.py --check   只檢查全部貼文（字數、禁用字），不需要金鑰
+  python post.py           發下一篇（需要環境變數 THREADS_TOKEN）
+  DRY_RUN=1 python post.py 只顯示下一篇要發什麼，不發
+"""
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+API = "https://graph.threads.net/v1.0"
+QUEUE = "queue.txt"
+DONE = "posted.json"
+MAX_LEN = 500
+BANNED = ["穩賺", "必賺", "保證獲利", "跟單", "跟著做", "穩贏", "加碼", "梭哈"]
+
+
+def load_posts():
+    with open(QUEUE, encoding="utf-8") as f:
+        raw = f.read()
+    posts = [p.strip() for p in raw.split("\n===\n") if p.strip()]
+    keys = [p.splitlines()[0].strip() for p in posts]
+    if len(set(keys)) != len(keys):
+        sys.exit("錯誤：有兩篇貼文的第一行相同，第一行要能當作識別名稱")
+    return list(zip(keys, posts))
+
+
+def problems(text):
+    out = []
+    if len(text) > MAX_LEN:
+        out.append(f"字數 {len(text)} 超過 {MAX_LEN}")
+    for w in BANNED:
+        if w in text:
+            out.append(f"含禁用字「{w}」")
+    return out
+
+
+def output(name, value):
+    path = os.environ.get("GITHUB_OUTPUT")
+    if path:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(f"{name}={value}\n")
+
+
+def call(path, params):
+    data = urllib.parse.urlencode({**params, "access_token": os.environ["THREADS_TOKEN"]}).encode()
+    req = urllib.request.Request(f"{API}/{path}", data=data, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace")
+        hint = "（金鑰無效或已過期，請重新產生並更新 THREADS_TOKEN）" if '"code":190' in body.replace(" ", "") else ""
+        sys.exit(f"Threads API 錯誤 {e.code}{hint}：{body}")
+
+
+def main():
+    posts = load_posts()
+
+    if "--check" in sys.argv:
+        bad = 0
+        for key, text in posts:
+            p = problems(text)
+            print(f"{'✗' if p else '✓'} {len(text):>3} 字  {key}" + (f"  → {'；'.join(p)}" if p else ""))
+            bad += bool(p)
+        print(f"\n共 {len(posts)} 篇，{bad} 篇有問題")
+        sys.exit(1 if bad else 0)
+
+    done = json.load(open(DONE, encoding="utf-8")) if os.path.exists(DONE) else []
+    posted = {d["key"] for d in done}
+    pending = [(k, t) for k, t in posts if k not in posted]
+
+    if not pending:
+        print("全部貼文都發完了，停止排程。")
+        output("finished", "true")
+        return
+
+    key, text = pending[0]
+    p = problems(text)
+    if p:
+        sys.exit(f"不發文，這篇有問題：{key} → {'；'.join(p)}")
+
+    print(f"下一篇（剩 {len(pending)} 篇）：\n\n{text}\n")
+    if os.environ.get("DRY_RUN") == "1":
+        print("DRY_RUN：只檢查，不發文。")
+        return
+
+    container = call("me/threads", {"media_type": "TEXT", "text": text})["id"]
+    time.sleep(30)  # Meta 建議建立後稍等再發布
+    post_id = call("me/threads_publish", {"creation_id": container})["id"]
+
+    done.append({"key": key, "post_id": post_id, "posted_at": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()) + " UTC"})
+    with open(DONE, "w", encoding="utf-8") as f:
+        json.dump(done, f, ensure_ascii=False, indent=2)
+    print(f"已發文：{key}（post id {post_id}）")
+    output("published", "true")
+
+
+if __name__ == "__main__":
+    main()
