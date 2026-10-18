@@ -1,0 +1,48 @@
+name: crypto-post
+
+on:
+  schedule:
+    - cron: "50 0 * * *"   # 每天台灣時間 08:50（UTC 00:50）；GitHub 排程常會晚幾分鐘到半小時
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "1 = 只檢查不發文，0 = 真的發文"
+        default: "1"
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency: crypto-post
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 發下一篇
+        id: post
+        env:
+          THREADS_TOKEN: ${{ secrets.THREADS_TOKEN }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || '0' }}
+        run: python post.py
+
+      - name: 記錄已發文
+        if: steps.post.outputs.published == 'true'
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add posted.json
+          git commit -m "posted"
+          git push
+
+      - name: 全部發完，自動停用排程
+        if: steps.post.outputs.finished == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow disable crypto-post.yml --repo "${{ github.repository }}"
