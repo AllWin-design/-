@@ -12,11 +12,13 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timedelta, timezone
 
 API = "https://graph.threads.net/v1.0"
 QUEUE = "queue.txt"
 DONE = "posted.json"
 MAX_LEN = 500
+POST_HOUR = 9           # 台灣時間幾點以後才發（排程每 5 分鐘檢查一次，到點且今天還沒發就發）
 DEFAULT_TOPIC = "幣圈"   # 每篇預設的主題；單篇要換，就在那篇最後一行寫「主題：XXX」
 BANNED = ["穩賺", "必賺", "保證獲利", "跟單", "跟著做", "穩贏", "加碼", "梭哈"]
 
@@ -85,6 +87,19 @@ def main():
     done = json.load(open(DONE, encoding="utf-8")) if os.path.exists(DONE) else []
     posted = {d["key"] for d in done}
     pending = [x for x in posts if x[0] not in posted]
+
+    # 排程頻繁檢查：還沒到點、或台灣日期今天已經發過就跳過（手動執行 FORCE=1 不受限）
+    tw_now = datetime.now(timezone.utc) + timedelta(hours=8)
+    tw_today = tw_now.date()
+    def tw_date(s):
+        return (datetime.strptime(s[:19], "%Y-%m-%d %H:%M:%S") + timedelta(hours=8)).date()
+    if pending and os.environ.get("FORCE") != "1":
+        if tw_now.hour < POST_HOUR:
+            print(f"還沒到發文時間（台灣 {POST_HOUR}:00），跳過。")
+            return
+        if any(tw_date(d["posted_at"]) == tw_today for d in done):
+            print(f"今天（{tw_today}）已經發過了，跳過。")
+            return
 
     if not pending:
         print("全部貼文都發完了，停止排程。")
